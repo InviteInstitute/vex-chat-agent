@@ -1,3 +1,6 @@
+# Kept from before the repo was renamed to vex-chat-agent: the project name prefixes
+# the production Postgres volume (vex-agent-integration_pgdata), so changing it would
+# start an empty database next to the real one.
 name: vex-agent-integration
 
 services:

@@ -1,10 +1,10 @@
 site_name: VEX Pedagogical Agent
 site_description: A pedagogical AI agent that gives VEXcode VR students grounded, in-the-moment feedback on their block code.
-site_url: https://inviteinstitute.github.io/vex-agent-integration/
+site_url: https://inviteinstitute.github.io/vex-chat-agent/
 docs_dir: docs
 dev_addr: localhost:4100
-repo_url: https://github.com/InviteInstitute/vex-agent-integration
-repo_name: InviteInstitute/vex-agent-integration
+repo_url: https://github.com/InviteInstitute/vex-chat-agent
+repo_name: InviteInstitute/vex-chat-agent
 
 theme:
   name: material

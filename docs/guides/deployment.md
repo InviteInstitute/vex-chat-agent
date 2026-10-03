@@ -78,7 +78,7 @@ proxied paths.
 ```nginx
 server {
     server_name agent.inviteai.org;
-    root /var/www/vex-agent-integration/client/dist;
+    root /var/www/vex-chat-agent/client/dist;
 
     location /v1/     { proxy_pass http://127.0.0.1:8001; }   # student + stream API (bot-gated)
     location /admin/  { proxy_pass http://127.0.0.1:8001; }   # admin tick
