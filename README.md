@@ -14,7 +14,7 @@ flowchart LR
     msg -. "Server-Sent Events" .-> student
 ```
 
-> Full documentation is published at <https://inviteinstitute.github.io/vex-agent-integration/>
+> Full documentation is published at <https://inviteinstitute.github.io/vex-chat-agent/>
 > (or run `mkdocs serve` to read it locally on port 4100).
 
 ## Quick Start
@@ -29,7 +29,7 @@ make dev                   # (or: docker compose up --build) API on :8001, Postg
 ```
 
 `make` (or `make help`) lists the shared command vocabulary - `dev`, `test`, `lint`,
-`format`, `build`, `deploy`. See the [Development](https://inviteinstitute.github.io/vex-agent-integration/guides/development/) docs.
+`format`, `build`, `deploy`. See the [Development](https://inviteinstitute.github.io/vex-chat-agent/guides/development/) docs.
 
 Then apply the schema and load a bundled fixture so there's real telemetry to ground on:
 
@@ -40,7 +40,7 @@ vex-parse-logs --input server/tests/fixtures/raw_logs/01_error_flagging_a.ndjson
 ```
 
 The full walkthrough (dev vs prod, the LLM setup, running one feedback tick) is in the
-[Quickstart](https://inviteinstitute.github.io/vex-agent-integration/quickstart/) docs.
+[Quickstart](https://inviteinstitute.github.io/vex-chat-agent/quickstart/) docs.
 
 ## What You Get
 
@@ -75,7 +75,7 @@ the built client from `client/dist` and proxying `/v1`, `/admin`, and `/healthz`
 `make deploy` is the whole rollout: `scripts/deploy.sh` guards a dirty tree, pulls, rolls
 the stack, applies the migrations, and gates on `/healthz`, then the client is rebuilt.
 See the
-[Deployment](https://inviteinstitute.github.io/vex-agent-integration/guides/deployment/)
+[Deployment](https://inviteinstitute.github.io/vex-chat-agent/guides/deployment/)
 docs.
 
 ## Under the Hood
@@ -84,4 +84,4 @@ Ingestion pulls VEX logs from the Hub incrementally (a cursor in Postgres, idemp
 inserts) and parses them into `parsed_events`. The proactive daemon assumes a **single
 writer** and is the sole owner of that cursor. The full write-up - architecture, the
 feedback pipeline, proactive triggers, the data model, configuration, and the API - lives
-at <https://inviteinstitute.github.io/vex-agent-integration/>.
+at <https://inviteinstitute.github.io/vex-chat-agent/>.
