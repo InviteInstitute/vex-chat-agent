@@ -129,6 +129,19 @@ def clear_client_cache() -> None:
     _reasoning_models.clear()
 
 
+def transcribe(filename: str, audio: bytes) -> str:
+    """Speech to text on the LLM gateway, for spoken questions. The browser records
+    WebM/Opus, which Lumen's granite-speech takes as is.
+
+    ponytail: the model is a calibration knob, read per call (each gateway names its
+    own, e.g. granite-speech-4.1-2b-plus on NCSA Lumen)."""
+    result = get_openai_client().audio.transcriptions.create(
+        model=os.getenv("TRANSCRIBE_MODEL", "gpt-4o-transcribe"),
+        file=(filename, audio),
+    )
+    return (result.text or "").strip()
+
+
 def _thinking_enabled() -> bool:
     """Thinking models (e.g. qwen3) emit a `<think>...</think>` reasoning block
     before the answer. The navigator produces short student-facing feedback, so

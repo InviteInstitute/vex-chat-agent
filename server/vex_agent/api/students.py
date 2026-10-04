@@ -1,10 +1,12 @@
 import logging
 from time import monotonic
+from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from vex_agent.api.schemas import (
+    AgentSettingsRequest,
     FeedbackRequest,
     FeedbackResponse,
     MessageRequest,
@@ -12,6 +14,7 @@ from vex_agent.api.schemas import (
     SessionResolutionResponse,
     StudentResponseRequest,
     StudentResponseResponse,
+    TranscriptionResponse,
 )
 from vex_agent.api.turnstile import COOKIE_NAME
 from vex_agent.config import DEFAULT_PLAYGROUND, get_navigator_model
@@ -21,6 +24,7 @@ from vex_agent.data.db import (
     get_message_id_for_response,
     insert_message,
     insert_message_feedback,
+    save_agent_settings,
 )
 from vex_agent.domain.catalogs import resolve_task_description
 from vex_agent.domain.feedback_policy import FeedbackClass, determine_feedback_class
@@ -29,7 +33,7 @@ from vex_agent.domain.metrics import (
     has_active_project_run,
     select_current_playground_segment,
 )
-from vex_agent.llm.client import DEFAULT_GENERATION_SETTINGS, GenerationSettings
+from vex_agent.llm.client import DEFAULT_GENERATION_SETTINGS, GenerationSettings, transcribe
 from vex_agent.services import budget
 from vex_agent.services.feedback import generate_feedback
 from vex_agent.services.logsync import sync_invite_hub_logs
@@ -113,6 +117,13 @@ def resolve_session(student_id: str) -> SessionResolutionResponse:
         playground=current_playground,
         status="resolved",
     )
+
+
+@router.put("/students/{student_id}/agent-settings", status_code=204)
+def put_agent_settings(student_id: str, payload: AgentSettingsRequest) -> None:
+    """The research page's settings, kept for this student's check-ins: the daemon
+    sends those on its own, with no request to carry them."""
+    save_agent_settings(student_id, payload.overrides.model_dump() if payload.overrides else None)
 
 
 @router.post("/students/{student_id}/messages", response_model=MessageResponse)
@@ -398,3 +409,40 @@ def create_feedback(
         comment=payload.comment,
         status="received",
     )
+
+
+# A spoken question for the chat's mic button. nginx's default body limit on /v1 is
+# 1MB, about a minute of the browser's Opus; the client stops at 30 seconds.
+MAX_AUDIO_BYTES = 1_000_000
+
+
+@router.post("/students/{student_id}/transcriptions", response_model=TranscriptionResponse)
+def transcribe_question(
+    student_id: str,
+    request: Request,
+    audio: Annotated[UploadFile, File()],
+) -> TranscriptionResponse:
+    """What the student said, as text. Behind the same bot gate and token budget as a
+    reply, since it runs on the same LLM gateway."""
+    budget_key = budget.budget_key(request.cookies.get(COOKIE_NAME))
+    try:
+        budget.check_budget(budget_key)
+    except budget.TokenBudgetExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    data = audio.file.read(MAX_AUDIO_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="The recording was empty.")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413, detail="That recording is too long. Keep it under a minute."
+        )
+    try:
+        text = transcribe(audio.filename or "question.webm", data)
+    except Exception as error:
+        logger.exception("Transcription failed for %s", student_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't turn the recording into text. Try again, or type your question.",
+        ) from error
+    log_stage("Spoken Question Transcribed", student_id=student_id, text=text)
+    return TranscriptionResponse(text=text)

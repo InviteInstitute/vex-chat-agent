@@ -57,6 +57,13 @@ class ResearchOverrides(BaseModel):
     )
 
 
+class AgentSettingsRequest(BaseModel):
+    overrides: ResearchOverrides | None = Field(
+        default=None,
+        description="Settings for this student's check-ins; null means production.",
+    )
+
+
 class StudentResponseRequest(BaseModel):
     message_id: str | None = Field(
         default=None,
@@ -101,6 +108,10 @@ class StudentResponseResponse(BaseModel):
     llm_tokens: int | None = Field(default=None, description="Tokens this reply's LLM calls spent.")
     session_tokens: "TokenUsage | None" = None
     status: Literal["received"]
+
+
+class TranscriptionResponse(BaseModel):
+    text: str = Field(description="What the student said, as text (empty if nothing was heard).")
 
 
 class FeedbackRequest(BaseModel):
