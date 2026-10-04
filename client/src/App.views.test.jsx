@@ -22,10 +22,11 @@ beforeEach(() => {
   );
   vi.stubGlobal(
     "fetch",
-    vi.fn(() =>
+    vi.fn((url) =>
       Promise.resolve({
-        ok: true,
-        status: 200,
+        // No avatar build deployed: students get the text chat these tests drive.
+        ok: !String(url).startsWith("/webgl/"),
+        status: String(url).startsWith("/webgl/") ? 404 : 200,
         json: () => Promise.resolve({ session_id: "session-1" }),
       }),
     ),
@@ -53,7 +54,7 @@ async function startChatWithCheckIn(user) {
   });
 }
 
-describe("student and research views", () => {
+describe("the chat and the research settings page", () => {
   it("shows students a plain check-in label without the trigger", async () => {
     const user = userEvent.setup();
     await startChatWithCheckIn(user);
@@ -63,49 +64,39 @@ describe("student and research views", () => {
     expect(screen.queryByText("session-1")).not.toBeInTheDocument();
   });
 
-  it("shows researchers the trigger, its reason, and the session", async () => {
+  it("makes the research view the agent settings page, with no second chat", async () => {
     const user = userEvent.setup();
     await startChatWithCheckIn(user);
 
     await user.click(screen.getByRole("button", { name: "Research" }));
 
-    expect(screen.getByText("Proactive check-in")).toBeInTheDocument();
-    expect(screen.getByText("wheel_spinning")).toBeInTheDocument();
-    expect(screen.getByText("3 runs with no code change")).toBeInTheDocument();
-    expect(screen.getByText("session-1")).toBeInTheDocument();
-    expect(window.localStorage.getItem("vex-agent:view")).toBe("research");
+    expect(screen.getByRole("region", { name: "Agent settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Conversation" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Message")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Student" }));
+    expect(screen.getByText("What do you expect the robot to do next time?")).toBeInTheDocument();
   });
 
-  it("keeps the student chat and the research chat separate", async () => {
+  it("starts every visit in the student view, with the toggle in the same place", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    const first = render(<App />);
     await user.type(screen.getByLabelText("Student ID"), "mars-042");
     await user.click(screen.getByRole("button", { name: "Start chat" }));
     await screen.findByRole("region", { name: "Conversation" });
-
-    await user.type(screen.getByLabelText("Message"), "question from the student view");
-    await user.click(screen.getByRole("button", { name: /Send/ }));
-    expect(await screen.findByText("question from the student view")).toBeInTheDocument();
-
+    const footer = () => screen.getByRole("group", { name: "View" }).parentElement;
+    const studentFooter = footer();
     await user.click(screen.getByRole("button", { name: "Research" }));
-    expect(screen.queryByText("question from the student view")).not.toBeInTheDocument();
-    await user.type(screen.getByLabelText("Message"), "experiment from the research view");
-    await user.click(screen.getByRole("button", { name: /Send/ }));
-    expect(await screen.findByText("experiment from the research view")).toBeInTheDocument();
+    // The same footer element holds the toggle on the settings page.
+    expect(footer()).toBe(studentFooter);
+    expect(footer()).toHaveClass("panel-foot");
+    first.unmount();
 
-    await user.click(screen.getByRole("button", { name: "Student" }));
-    expect(screen.getByText("question from the student view")).toBeInTheDocument();
-    expect(screen.queryByText("experiment from the research view")).not.toBeInTheDocument();
-
-    const sentChats = fetch.mock.calls
-      .filter(([url]) => url.endsWith("/messages") || url.endsWith("/responses"))
-      .map(([url, options]) => [url.split("/").pop(), JSON.parse(options.body).chat]);
-    expect(sentChats).toEqual([
-      ["messages", "student"],
-      ["responses", "student"],
-      ["messages", "research"],
-      ["responses", "research"],
-    ]);
+    render(<App />);
+    await user.type(screen.getByLabelText("Student ID"), "mars-042");
+    await user.click(screen.getByRole("button", { name: "Start chat" }));
+    expect(await screen.findByRole("region", { name: "Conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Student" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("counts replies that arrive while the chat is collapsed", async () => {

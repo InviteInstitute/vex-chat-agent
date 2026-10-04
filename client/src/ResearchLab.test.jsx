@@ -14,6 +14,13 @@ const CONFIG = {
 };
 
 describe("buildOverrides", () => {
+  it("sends nothing without a usable config", () => {
+    expect(buildOverrides({ ...EMPTY_AGENT_SETTINGS, model: "glm-5.3" }, null)).toBeNull();
+    expect(
+      buildOverrides({ ...EMPTY_AGENT_SETTINGS, model: "glm-5.3" }, { session_id: "s" }),
+    ).toBeNull();
+  });
+
   it("sends nothing while every setting is at its production default", () => {
     expect(buildOverrides(EMPTY_AGENT_SETTINGS, CONFIG)).toBeNull();
     expect(
@@ -49,13 +56,12 @@ describe("buildOverrides", () => {
   });
 });
 
-describe("Agent tab", () => {
+describe("research settings page", () => {
   let fetchMock;
   let responsesReply;
 
   beforeEach(() => {
     window.localStorage.clear();
-    window.localStorage.setItem("vex-agent:view", "research");
     window.HTMLElement.prototype.scrollIntoView = () => {};
     vi.stubGlobal(
       "EventSource",
@@ -79,6 +85,10 @@ describe("Agent tab", () => {
     fetchMock = vi.fn((url) => {
       const json = (body, status = 200) =>
         Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
+      // No avatar build deployed: students get the text chat these tests drive.
+      if (url.startsWith("/webgl/")) {
+        return json({}, 404);
+      }
       if (url.endsWith("/research/config")) {
         return json({ ...CONFIG, session_tokens: { used: 2000, limit: 150000 } });
       }
@@ -103,29 +113,28 @@ describe("Agent tab", () => {
     await user.click(screen.getByRole("button", { name: "Start chat" }));
   }
 
-  it("needs no key, sends the chosen model, and tracks the session's tokens", async () => {
+  it("applies the settings chosen on the research page to the chat", async () => {
     const user = userEvent.setup();
     await startChat(user);
+    await user.click(await screen.findByRole("button", { name: "Research" }));
 
-    await user.click(await screen.findByRole("tab", { name: "Agent" }));
+    // The research view is only the settings page: no tabs, no second chat.
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     await user.selectOptions(await screen.findByLabelText("Model"), "glm-5.3");
     expect(screen.getByRole("status")).toHaveTextContent("Custom settings are on");
     expect(screen.getByText("2,000 of 150,000 LLM tokens used this session.")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Chat" }));
+    await user.click(screen.getByRole("button", { name: "Student" }));
     expect(screen.getByText(/Custom agent: glm-5\.3/)).toBeInTheDocument();
     await user.type(screen.getByLabelText("Message"), "why does it stop?");
     await user.click(screen.getByRole("button", { name: /Send/ }));
 
     const [, options] = fetchMock.mock.calls.find(([url]) => url.endsWith("/responses"));
     expect(JSON.parse(options.body).overrides).toEqual({ model: "glm-5.3" });
-
     const conversation = screen.getByRole("region", { name: "Conversation" });
     expect(await within(conversation).findByText("Try a longer drive.")).toBeInTheDocument();
-    expect(within(conversation).getByText("1,830")).toBeInTheDocument();
-    expect(within(conversation).getByText("Prompt sent to the model")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    await user.click(screen.getByRole("button", { name: "Research" }));
     expect(screen.getByText("3,830 of 150,000 LLM tokens used this session.")).toBeInTheDocument();
   });
 
@@ -149,16 +158,15 @@ describe("Agent tab", () => {
     expect(within(conversation).queryByText(/Not sent/)).not.toBeInTheDocument();
   });
 
-  it("sends no overrides from the student view", async () => {
-    window.localStorage.setItem("vex-agent:view", "student");
+  it("keeps using saved settings after a reload, straight from the chat", async () => {
     window.localStorage.setItem("vex-agent:agent-settings", JSON.stringify({ model: "glm-5.3" }));
     const user = userEvent.setup();
     await startChat(user);
-    await user.type(await screen.findByLabelText("Message"), "hi");
+    expect(await screen.findByText(/Custom agent: glm-5\.3/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Message"), "hi");
     await user.click(screen.getByRole("button", { name: /Send/ }));
 
-    expect(screen.queryByRole("tab", { name: "Agent" })).not.toBeInTheDocument();
     const [, options] = fetchMock.mock.calls.find(([url]) => url.endsWith("/responses"));
-    expect(JSON.parse(options.body).overrides).toBeUndefined();
+    expect(JSON.parse(options.body).overrides).toEqual({ model: "glm-5.3" });
   });
 });

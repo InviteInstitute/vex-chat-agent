@@ -4,10 +4,14 @@ import {
   CaretDown,
   ChatCircleText,
   Question,
+  SpeakerHigh,
+  SpeakerSlash,
   ThumbsDown,
   ThumbsUp,
   WarningCircle,
 } from "@phosphor-icons/react";
+import AvatarCharacter, { isAvatarBuildAvailable } from "./AvatarCharacter.jsx";
+import VoiceButton, { canRecordVoice } from "./VoiceButton.jsx";
 import ResearchLab, {
   EMPTY_AGENT_SETTINGS,
   buildOverrides,
@@ -121,8 +125,8 @@ export function renderMessageBody(text) {
   return elements;
 }
 
-const VIEW_STORAGE_KEY = "vex-agent:view";
 const AGENT_SETTINGS_STORAGE_KEY = "vex-agent:agent-settings";
+const MUTED_STORAGE_KEY = "vex-agent:muted";
 
 function readStored(key, fallback) {
   try {
@@ -143,16 +147,6 @@ function writeStored(key, value) {
   } catch {}
 }
 
-// Student view is what a student sees in class; research view adds the
-// telemetry behind each message (proactive trigger, model, session id).
-function readStoredView() {
-  try {
-    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "research" ? "research" : "student";
-  } catch {
-    return "student";
-  }
-}
-
 function createPendingAssistantMessage() {
   return {
     id: crypto.randomUUID(),
@@ -171,6 +165,8 @@ const ICONS = {
   thumbDown: ThumbsDown,
   alert: WarningCircle,
   chat: ChatCircleText,
+  voiceOn: SpeakerHigh,
+  voiceOff: SpeakerSlash,
 };
 
 function Icon({ name, weight = "bold" }) {
@@ -249,8 +245,9 @@ function App() {
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [isInteractingWithPanel, setIsInteractingWithPanel] = useState(false);
   const [hoveredResizeHandle, setHoveredResizeHandle] = useState(null);
-  const [view, setView] = useState(readStoredView);
-  const [researchTab, setResearchTab] = useState("chat");
+  // Every visit starts in the student view (what a student sees in class); the
+  // research view, the agent settings page, is one tap away and not remembered.
+  const [view, setView] = useState("student");
   const [researchConfig, setResearchConfig] = useState(null);
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
   const [configError, setConfigError] = useState("");
@@ -261,6 +258,15 @@ function App() {
     ...readStored(AGENT_SETTINGS_STORAGE_KEY, {}),
   }));
   const [seenMessageCount, setSeenMessageCount] = useState(0);
+  // Whether the Unity avatar's WebGL build is deployed; until it is, students get
+  // the text chat panel.
+  const [isAvatarAvailable, setIsAvatarAvailable] = useState(false);
+  // The character's voice: a per-browser choice, so a quiet classroom stays quiet.
+  const [isMuted, setIsMuted] = useState(() => readStored(MUTED_STORAGE_KEY, false) === true);
+  // Voice questions: why the last one couldn't be used, and a bump that tells the
+  // tutor to stop talking when the student starts speaking.
+  const [voiceError, setVoiceError] = useState("");
+  const [hushSignal, setHushSignal] = useState(0);
   const panelRef = useRef(null);
   const interactionRef = useRef(null);
   const messageListRef = useRef(null);
@@ -270,12 +276,37 @@ function App() {
   const isStartModeRef = useRef(true);
   isStartModeRef.current = !studentId;
   const isResearchView = view === "research";
-  const messages = chats[view];
-  // Overrides only ever leave this browser from the research view.
-  const agentOverrides = isResearchView ? buildOverrides(agentSettings, researchConfig) : null;
-  const showAgentTab = isResearchView && researchTab === "agent";
+  // The first block of the session's UUID; the full id is in the tooltip.
+  const shortSessionId = /^[0-9a-f]{8}-/i.test(sessionId) ? sessionId.slice(0, 8) : null;
+  // One conversation; the research view is only the agent settings page.
+  const messages = chats.student;
+  // Settings chosen on the research page apply to this browser's chat (by voice or
+  // typed); the server tags those replies as research.
+  const agentOverrides = buildOverrides(agentSettings, researchConfig);
+  const hasCustomSettings = JSON.stringify(agentSettings) !== JSON.stringify(EMPTY_AGENT_SETTINGS);
   // The start card sizes to its content; only the chat itself is resizable.
   const canResize = Boolean(studentId);
+  // What the character says: the newest finished reply or check-in in this view,
+  // once a student has signed in (the start card stays silent).
+  const latestReply = studentId
+    ? [...messages]
+        .reverse()
+        .find((message) => message.role === "assistant" && !message.isLoading && !message.error)
+    : null;
+  const utterance = latestReply?.body
+    ? {
+        // Keyed by the message alone: switching views must not make it new again.
+        id: latestReply.id,
+        messageId: latestReply.id,
+        text: latestReply.body,
+        // Spoken a sentence per clip (the server's split); the greeting is one clip.
+        parts: latestReply.speech?.length ? latestReply.speech : [latestReply.body],
+      }
+    : null;
+
+  useEffect(() => {
+    isAvatarBuildAvailable().then(setIsAvatarAvailable);
+  }, []);
 
   // Replies that land while the chat is collapsed, so the launcher can say so.
   const unseenReplies = isChatOpen
@@ -285,21 +316,38 @@ function App() {
         .filter((message) => message.role === "assistant" && !message.isLoading).length;
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(VIEW_STORAGE_KEY, view);
-    } catch {}
-  }, [view]);
-
-  useEffect(() => {
     writeStored(AGENT_SETTINGS_STORAGE_KEY, agentSettings);
   }, [agentSettings]);
 
   useEffect(() => {
-    if (isResearchView && studentId && !researchConfig && !isLoadingConfig && !configError) {
+    writeStored(MUTED_STORAGE_KEY, isMuted);
+  }, [isMuted]);
+
+  useEffect(() => {
+    // Saved custom settings need the config to become overrides, so load it for the
+    // chat too, not only on the settings page.
+    const wantsConfig = isResearchView || hasCustomSettings;
+    if (wantsConfig && studentId && !researchConfig && !isLoadingConfig && !configError) {
       loadResearchConfig();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isResearchView, studentId]);
+  }, [isResearchView, hasCustomSettings, studentId]);
+
+  // Check-ins come from the server's daemon, not from a request this browser makes,
+  // so it keeps a copy of the settings to use for them. Saved custom settings wait for
+  // the config: until then they would read as production and clear the copy.
+  const savedOverrides = JSON.stringify(agentOverrides);
+  const overridesReady = !hasCustomSettings || Boolean(researchConfig);
+  useEffect(() => {
+    if (!studentId || !overridesReady) {
+      return;
+    }
+    fetch(`${apiBase}/students/${encodeURIComponent(studentId)}/agent-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overrides: JSON.parse(savedOverrides) }),
+    }).catch(() => {}); // best effort: the chat itself carries its settings
+  }, [apiBase, studentId, savedOverrides, overridesReady]);
 
   const collapseChat = () => {
     setSeenMessageCount(messages.length);
@@ -326,6 +374,7 @@ function App() {
         id: proactiveId,
         role: "assistant",
         body: payload.message,
+        speech: payload.speech || null,
         proactive: true,
         canFeedback: false,
         trigger: payload.trigger_type,
@@ -581,6 +630,17 @@ function App() {
     return data;
   };
 
+  // A file upload (the mic's recording); same error handling as postJson.
+  const postForm = async (path, formData) => {
+    const response = await fetch(`${apiBase}${path}`, { method: "POST", body: formData });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      checkTurnstileRequired(response, data);
+      throw new Error(data.detail || `Request failed with status ${response.status}`);
+    }
+    return data;
+  };
+
   const getJson = async (path, headers = {}) => {
     const response = await fetch(`${apiBase}${path}`, { headers });
     const data = await response.json().catch(() => ({}));
@@ -737,9 +797,7 @@ function App() {
     };
     const pendingAssistantMessage = createPendingAssistantMessage();
 
-    // Pin the chat at send time, so a reply lands where it was asked even if the view
-    // is switched while it is on its way.
-    const chat = view;
+    const chat = "student";
     appendMessage(chat, studentTurn);
     appendMessage(chat, pendingAssistantMessage);
     setPendingAction(action);
@@ -757,6 +815,8 @@ function App() {
         session_id: messageResponse.session_id,
         student_message: studentMessage,
         chat,
+        // The character will say it: the server starts the speech while it replies.
+        speak: isAvatarAvailable && !isMuted,
         ...(agentOverrides ? { overrides: agentOverrides } : {}),
       });
       setSessionId(responseRecord.session_id);
@@ -772,6 +832,7 @@ function App() {
                   id: responseRecord.response_id,
                   role: "assistant",
                   body: responseRecord.response_text,
+                  speech: responseRecord.speech || null,
                   model: responseRecord.llm_model || null,
                   prompt: responseRecord.llm_prompt || null,
                   tokens: responseRecord.llm_tokens ?? null,
@@ -827,6 +888,35 @@ function App() {
     });
   };
 
+  // A spoken question: turn it into text, then ask it like a typed one, so the student
+  // sees exactly what the tutor heard.
+  const handleVoiceRecorded = async (recording) => {
+    setVoiceError("");
+    setPendingAction("transcribing");
+    let text = "";
+    try {
+      const form = new FormData();
+      form.append("audio", recording, "question.webm");
+      text = (await postForm(`/students/${studentId}/transcriptions`, form)).text.trim();
+    } catch (error) {
+      setVoiceError(error.message);
+      setPendingAction("");
+      return;
+    }
+    setPendingAction("");
+    if (!text) {
+      setVoiceError("I didn't catch that. Try again a little closer to the mic, or type it.");
+      return;
+    }
+    askAgent({
+      shownText: text,
+      message: text,
+      studentMessage: text,
+      action: "message",
+      fallbackBody: "The agent ran into a delay. Try asking again in a moment.",
+    });
+  };
+
   const handleHelp = () => {
     askAgent({
       shownText: "Help",
@@ -852,54 +942,6 @@ function App() {
       );
     }
     return null;
-  };
-
-  const renderResearchDetails = (message) => {
-    if (!isResearchView) {
-      return null;
-    }
-    const rows = [];
-    if (message.proactive) {
-      rows.push(["Trigger", <code key="t">{message.trigger || "unknown"}</code>]);
-      if (message.triggerWhy) {
-        rows.push(["Why", message.triggerWhy]);
-      }
-    }
-    if (message.model) {
-      rows.push(["Model", <code key="m">{message.model}</code>]);
-    }
-    if (message.custom) {
-      rows.push(["Settings", message.custom]);
-    }
-    if (message.tokens) {
-      rows.push(["Tokens", message.tokens.toLocaleString()]);
-    }
-    if (message.error) {
-      rows.push(["Error", message.error]);
-    }
-    if (!rows.length && !message.prompt) {
-      return null;
-    }
-    return (
-      <div className="research-details">
-        {rows.length ? (
-          <dl>
-            {rows.map(([term, detail]) => (
-              <div key={term}>
-                <dt>{term}</dt>
-                <dd>{detail}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : null}
-        {message.prompt ? (
-          <details className="prompt-sent">
-            <summary>Prompt sent to the model</summary>
-            <pre>{message.prompt}</pre>
-          </details>
-        ) : null}
-      </div>
-    );
   };
 
   const renderFeedback = (message) => {
@@ -975,13 +1017,44 @@ function App() {
     );
   };
 
+  // Student chat or the research page (the agent settings).
+  const viewToggle = (
+    <div className="view-toggle" role="group" aria-label="View">
+      {[
+        ["student", "Student"],
+        ["research", "Research"],
+      ].map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={view === value}
+          onClick={() => setView(value)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
-    <main className="overlay-shell">
+    <main className={`overlay-shell ${isAvatarAvailable ? "has-avatar" : ""}`}>
       <iframe
         className={`background-frame ${isInteractingWithPanel ? "background-frame-inactive" : ""}`}
         src="https://research-vr.vex.com/"
         title="Research VR"
       />
+
+      {isAvatarAvailable ? (
+        <AvatarCharacter
+          panelRef={panelRef}
+          // Loads in the background from the start, but appears only once signed in.
+          visible={Boolean(studentId)}
+          layoutKey={`${panelRect.x},${panelRect.y},${panelRect.width},${panelRect.height},${isChatOpen},${studentId}`}
+          utterance={utterance}
+          muted={isMuted}
+          hushSignal={hushSignal}
+        />
+      ) : null}
 
       {isChatOpen ? (
         <section
@@ -1008,9 +1081,9 @@ function App() {
             <div className="panel-title">
               <h1>INVITE Agent</h1>
               {studentId ? <span className="panel-student">{studentId}</span> : null}
-              {studentId && isResearchView ? (
-                <span className="panel-session" title={sessionId}>
-                  {sessionId}
+              {studentId && shortSessionId ? (
+                <span className="panel-session" title={`Session ${sessionId}`}>
+                  {shortSessionId}
                 </span>
               ) : null}
             </div>
@@ -1022,7 +1095,19 @@ function App() {
                 disabled={isAgentBusy}
               >
                 <Icon name="help" />
-                {pendingAction === "help" ? "Asking…" : "Help"}
+                <span className="help-label">{pendingAction === "help" ? "Asking…" : "Help"}</span>
+              </button>
+            ) : null}
+            {studentId && isAvatarAvailable ? (
+              <button
+                type="button"
+                className="panel-icon-button"
+                onClick={() => setIsMuted((current) => !current)}
+                aria-pressed={isMuted}
+                aria-label={isMuted ? "Turn the tutor's voice on" : "Mute the tutor's voice"}
+                title={isMuted ? "Turn voice on" : "Mute voice"}
+              >
+                <Icon name={isMuted ? "voiceOff" : "voiceOn"} />
               </button>
             ) : null}
             <button
@@ -1073,143 +1158,120 @@ function App() {
           ) : (
             <>
               {isResearchView ? (
-                <div className="research-tabs" role="tablist" aria-label="Research preview">
-                  {[
-                    ["chat", "Chat"],
-                    ["agent", "Agent"],
-                  ].map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      role="tab"
-                      id={`research-tab-${value}`}
-                      aria-selected={researchTab === value}
-                      aria-controls={`research-panel-${value}`}
-                      onClick={() => setResearchTab(value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              {showAgentTab ? (
-                <section
-                  className="research-panel"
-                  id="research-panel-agent"
-                  role="tabpanel"
-                  aria-labelledby="research-tab-agent"
-                >
-                  <ResearchLab
-                    config={researchConfig}
-                    settings={agentSettings}
-                    onSettingsChange={setAgentSettings}
-                    sessionTokens={sessionTokens}
-                    isLoading={isLoadingConfig}
-                    loadError={configError}
-                    onRetry={loadResearchConfig}
-                  />
-                </section>
-              ) : null}
-              <section
-                className="message-list"
-                aria-label="Conversation"
-                ref={messageListRef}
-                hidden={showAgentTab}
-              >
-                {messages.map((message) =>
-                  message.role === "student" ? (
-                    <article key={message.id} className="turn turn-student">
-                      <span className="sr-only">You said: </span>
-                      <div className="turn-body">{renderMessageBody(message.body)}</div>
-                      {renderStudentStatus(message)}
-                    </article>
-                  ) : (
-                    <article
-                      key={message.id}
-                      className={`turn turn-agent ${message.proactive ? "turn-checkin" : ""} ${
-                        message.error ? "turn-error" : ""
-                      }`}
-                    >
-                      {message.proactive ? (
-                        <p className="turn-label">
-                          {isResearchView ? "Proactive check-in" : "INVITE Agent is checking in"}
-                        </p>
-                      ) : (
-                        <span className="sr-only">INVITE Agent said: </span>
-                      )}
-                      <div className="turn-body">
-                        {message.isLoading ? (
-                          <span className="thinking" role="status">
-                            <span className="sr-only">INVITE Agent is thinking</span>
-                            <span aria-hidden="true" />
-                            <span aria-hidden="true" />
-                            <span aria-hidden="true" />
-                          </span>
-                        ) : (
-                          renderMessageBody(message.body)
-                        )}
-                      </div>
-                      {renderResearchDetails(message)}
-                      {message.canFeedback ? renderFeedback(message) : null}
-                    </article>
-                  ),
-                )}
-                <div ref={messagesEndRef} aria-hidden="true" />
-              </section>
-
-              <form className="composer" onSubmit={handleSend} hidden={showAgentTab}>
-                {agentOverrides ? (
-                  <p className="composer-custom">
-                    Custom agent: {describeOverrides(agentOverrides)}.{" "}
-                    <button
-                      type="button"
-                      className="lab-link"
-                      onClick={() => setResearchTab("agent")}
-                    >
-                      Edit
-                    </button>
-                  </p>
-                ) : null}
-                <div className="composer-field">
-                  <label className="sr-only" htmlFor="student-message">
-                    Message
-                  </label>
-                  <textarea
-                    id="student-message"
-                    rows="2"
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onKeyDown={handleComposerKeyDown}
-                    maxLength={2000}
-                    placeholder="Ask about your program, your bug, or what to try next."
-                  />
-                  <button
-                    type="submit"
-                    className="send-button"
-                    disabled={pendingAction === "message" || !draft.trim()}
-                  >
-                    <Icon name="send" />
-                    {pendingAction === "message" ? "Sending…" : "Send"}
-                  </button>
-                </div>
-                <div className="composer-foot">
-                  <div className="view-toggle" role="group" aria-label="View">
-                    {[
-                      ["student", "Student"],
-                      ["research", "Research"],
-                    ].map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        aria-pressed={view === value}
-                        onClick={() => setView(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                <section className="research-panel" aria-label="Agent settings">
+                  <div className="research-scroll">
+                    <ResearchLab
+                      config={researchConfig}
+                      settings={agentSettings}
+                      onSettingsChange={setAgentSettings}
+                      sessionTokens={sessionTokens}
+                      isLoading={isLoadingConfig}
+                      loadError={configError}
+                      onRetry={loadResearchConfig}
+                    />
                   </div>
-                </div>
-              </form>
+                </section>
+              ) : (
+                <>
+                  <section className="message-list" aria-label="Conversation" ref={messageListRef}>
+                    {messages.map((message) =>
+                      message.role === "student" ? (
+                        <article key={message.id} className="turn turn-student">
+                          <span className="sr-only">You said: </span>
+                          <div className="turn-body">{renderMessageBody(message.body)}</div>
+                          {renderStudentStatus(message)}
+                        </article>
+                      ) : (
+                        <article
+                          key={message.id}
+                          className={`turn turn-agent ${message.proactive ? "turn-checkin" : ""} ${
+                            message.error ? "turn-error" : ""
+                          }`}
+                        >
+                          {message.proactive ? (
+                            <p className="turn-label">INVITE Agent is checking in</p>
+                          ) : (
+                            <span className="sr-only">INVITE Agent said: </span>
+                          )}
+                          <div className="turn-body">
+                            {message.isLoading ? (
+                              <span className="thinking" role="status">
+                                <span className="sr-only">INVITE Agent is thinking</span>
+                                <span aria-hidden="true" />
+                                <span aria-hidden="true" />
+                                <span aria-hidden="true" />
+                              </span>
+                            ) : (
+                              renderMessageBody(message.body)
+                            )}
+                          </div>
+                          {message.canFeedback ? renderFeedback(message) : null}
+                        </article>
+                      ),
+                    )}
+                    <div ref={messagesEndRef} aria-hidden="true" />
+                  </section>
+
+                  <form className="composer" onSubmit={handleSend}>
+                    {agentOverrides ? (
+                      <p className="composer-custom">
+                        Custom agent: {describeOverrides(agentOverrides)}.{" "}
+                        <button
+                          type="button"
+                          className="lab-link"
+                          onClick={() => setView("research")}
+                        >
+                          Edit
+                        </button>
+                      </p>
+                    ) : null}
+                    <div className="composer-field">
+                      <label className="sr-only" htmlFor="student-message">
+                        Message
+                      </label>
+                      <textarea
+                        id="student-message"
+                        rows="2"
+                        value={draft}
+                        onChange={(event) => setDraft(event.target.value)}
+                        onKeyDown={handleComposerKeyDown}
+                        maxLength={2000}
+                        placeholder={
+                          pendingAction === "transcribing"
+                            ? "Turning what you said into text…"
+                            : "Ask about your program, your bug, or what to try next."
+                        }
+                      />
+                      {canRecordVoice() ? (
+                        <VoiceButton
+                          disabled={Boolean(pendingAction)}
+                          onRecordingStart={() => {
+                            setVoiceError("");
+                            setHushSignal((current) => current + 1);
+                          }}
+                          onRecorded={handleVoiceRecorded}
+                          onError={setVoiceError}
+                        />
+                      ) : null}
+                      <button
+                        type="submit"
+                        className="send-button"
+                        disabled={pendingAction === "message" || !draft.trim()}
+                      >
+                        <Icon name="send" />
+                        {pendingAction === "message" ? "Sending…" : "Send"}
+                      </button>
+                    </div>
+                    {voiceError ? (
+                      <p className="composer-error" role="alert">
+                        {voiceError}
+                      </p>
+                    ) : null}
+                  </form>
+                </>
+              )}
+              {/* One footer for both views, so the toggle never moves. */}
+              <div className="panel-foot">{viewToggle}</div>
               <span className="resize-grip" aria-hidden="true" />
             </>
           )}
