@@ -34,3 +34,6 @@ build/
 server/vex_agent/ingest/invite_hub_sync_state*.json
 server/vex_agent/ingest/invite_vex_logs*.ndjson
 server/state/
+
+# Client build swap folders (deploys build into dist.next, keep dist.prev to roll back)
+client/dist.*/

@@ -84,6 +84,7 @@ server {
     location /admin/  { proxy_pass http://127.0.0.1:8001; }   # admin tick
     location = /healthz { proxy_pass http://127.0.0.1:8001; } # health check
     location /        { try_files $uri /index.html; }         # the SPA
+    location = /index.html { add_header Cache-Control "no-cache"; } # a reload picks up each deploy
 }
 ```
 
